@@ -1,0 +1,184 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build (dry run; no release is published)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Every released binary carries the real engine. This is also the first
+  # compile of the `sherpa` feature — CI runs default features only.
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            asset: macos-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            asset: macos-x86_64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            asset: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            asset: linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Stage the embedded Silero VAD model
+        run: scripts/fetch-silero-vad.sh
+
+      - name: Build
+        run: cargo build --release --locked --features sherpa --target ${{ matrix.target }}
+
+      - name: Verify the binary answers
+        run: ./target/${{ matrix.target }}/release/fermix-stt --version
+
+      - name: Sign and notarize (macOS)
+        if: startsWith(matrix.runner, 'macos')
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_API_ISSUER_ID }}
+          BINARY: target/${{ matrix.target }}/release/fermix-stt
+        run: |
+          set -euo pipefail
+          if [ -z "${CERTIFICATE_P12}" ] || [ -z "${SIGNING_IDENTITY}" ]; then
+            echo "::warning title=Unsigned build::MACOS_CERTIFICATE_P12 / MACOS_SIGNING_IDENTITY are not set. Publishing an UNSIGNED, UNNOTARIZED ${{ matrix.asset }} binary. Gatekeeper will quarantine it on download. Set the signing secrets and re-run this release."
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 900 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+          codesign --force --timestamp --options runtime \
+            --sign "$SIGNING_IDENTITY" "$BINARY"
+          codesign --verify --strict --verbose=2 "$BINARY"
+
+          if [ -z "${NOTARY_KEY}" ] || [ -z "${NOTARY_KEY_ID}" ] || [ -z "${NOTARY_ISSUER_ID}" ]; then
+            echo "::warning title=Not notarized::The binary is signed but MACOS_NOTARY_API_* are not set, so it was not notarized. Gatekeeper will still warn on first launch."
+            exit 0
+          fi
+
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "$BINARY" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait --timeout 30m
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/notarize.zip"
+          # A bare executable cannot be stapled; Gatekeeper checks the notary
+          # service online. Nothing further to do here.
+
+      - name: Package
+        id: package
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          name="fermix-stt-${version}-${ASSET}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/fermix-stt" "dist/${name}/fermix-stt"
+          cp LICENSE README.md "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          fi
+          cat "dist/${name}.tar.gz.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Local speech-to-text sidecar for the Fermix daemon."
+            echo
+            echo "Wire \`protocol_version\` 1. See CHANGELOG.md for details."
+            echo
+            echo "## Pinning this release in fermix"
+            echo
+            echo "fermix pins a sidecar **tag** plus a per-target sha256. Take the"
+            echo "values from \`SHA256SUMS\` below and land them in the fermix repo as"
+            echo "a normal PR — never hand-write a checksum."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS

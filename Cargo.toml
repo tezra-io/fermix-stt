@@ -1,0 +1,54 @@
+# Standalone package: declared explicitly so a parent directory can never
+# capture it into someone else's workspace.
+[workspace]
+
+[package]
+name = "fermix-stt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Local speech-to-text sidecar for the Fermix daemon: NDJSON over stdio, symphonia decode, sherpa-onnx recognition"
+repository = "https://github.com/tezra-io/fermix-stt"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "fermix-stt"
+path = "src/main.rs"
+
+[lib]
+name = "fermix_stt"
+path = "src/lib.rs"
+
+[features]
+# Default build is hermetic: no native library, no model, no network.
+default = []
+# Real recognition. Pulls the sherpa-onnx native library (downloaded and linked
+# by the sherpa-onnx build script) and requires assets/silero_vad.onnx to exist.
+sherpa = ["dep:sherpa-onnx"]
+
+[dependencies]
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dependencies.symphonia]
+version = "0.6"
+default-features = false
+features = ["aac", "adpcm", "alac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"]
+
+[dependencies.sherpa-onnx]
+version = "1.13"
+optional = true
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
