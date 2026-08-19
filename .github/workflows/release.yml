@@ -120,12 +120,19 @@ jobs:
           cp "target/${{ matrix.target }}/release/fermix-stt" "dist/${name}/fermix-stt"
           cp LICENSE README.md "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          # The bare binary is what the fermix daemon's SidecarInstaller
+          # downloads (it pins a per-target URL + the binary's sha256 and
+          # execs it directly). The tarball is the human-download convenience.
+          bare="fermix-stt-${ASSET}"
+          cp "target/${{ matrix.target }}/release/fermix-stt" "dist/${bare}"
           if command -v sha256sum >/dev/null 2>&1; then
-            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+            hash() { sha256sum "$1"; }
           else
-            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+            hash() { shasum -a 256 "$1"; }
           fi
-          cat "dist/${name}.tar.gz.sha256"
+          (cd dist && hash "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          (cd dist && hash "${bare}" > "${bare}.sha256")
+          cat "dist/${bare}.sha256"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
@@ -133,7 +140,8 @@ jobs:
           name: ${{ steps.package.outputs.name }}
           path: |
             dist/*.tar.gz
-            dist/*.tar.gz.sha256
+            dist/fermix-stt-${{ matrix.asset }}
+            dist/*.sha256
           if-no-files-found: error
 
   publish:
@@ -157,10 +165,7 @@ jobs:
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
 
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - name: Compose the release notes
         run: |
           set -euo pipefail
           {
@@ -170,15 +175,26 @@ jobs:
             echo
             echo "## Pinning this release in fermix"
             echo
-            echo "fermix pins a sidecar **tag** plus a per-target sha256. Take the"
-            echo "values from \`SHA256SUMS\` below and land them in the fermix repo as"
-            echo "a normal PR — never hand-write a checksum."
+            echo "fermix's SidecarInstaller pins a per-target **bare binary** URL"
+            echo "(\`fermix-stt-<target>\`) plus that binary's sha256, and the daemon"
+            echo "downloads and execs it directly. Take the \`fermix-stt-<target>\`"
+            echo "values from \`SHA256SUMS\` below — not the tarball's — and land them"
+            echo "in the fermix repo as a normal PR; never hand-write a checksum."
             echo
             echo '```'
             cat dist/SHA256SUMS
             echo '```'
           } > notes.md
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file notes.md \
-            dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS
+
+      # Idempotent (matches fermix-meetbot): creates the release or updates it,
+      # so a hand-created release or a re-run does not fail the job.
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: notes.md
+          files: |
+            dist/*.tar.gz
+            dist/fermix-stt-*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
