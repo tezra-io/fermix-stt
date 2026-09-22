@@ -97,9 +97,13 @@ sidecar does.
   wire-incompatible change, in lockstep with the daemon's `@protocol_version`,
   and re-vendor `protocol/` here in the same change.
 - **Release order is sidecar first.** Tag `v<version>` here, let `release.yml`
-  build the four targets, then pin that tag *and* the per-target `sha256` in
-  fermix's downloader. Fermix pins a tag, not a range — an installed fermix
-  keeps downloading the sidecar it was built against.
+  build the three targets (macos-aarch64, linux-x86_64, linux-aarch64), then pin
+  that tag *and* the per-target `sha256` in fermix's downloader. Fermix pins a
+  tag, not a range — an installed fermix keeps downloading the sidecar it was
+  built against.
+- **Never re-run a published tag's release.** The publish step replaces assets
+  of the same name, and a rebuilt binary does not hash the same, so every fermix
+  already pinning that tag would refuse the download. Cut a new version instead.
 - Regenerating the pins is a normal PR in the fermix repo. Never hand-write a
   checksum: take it from the release artifacts.
 

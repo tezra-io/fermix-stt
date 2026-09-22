@@ -23,14 +23,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # No macos-x86_64 (matches fermix-meetbot): GitHub retired its Intel macOS
+      # runners, so a job for one queues and never starts, and `publish` needs
+      # every build. That is how v0.1.0 shipped without its Linux binaries.
       matrix:
         include:
           - target: aarch64-apple-darwin
             runner: macos-14
             asset: macos-aarch64
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            asset: macos-x86_64
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
             asset: linux-x86_64
@@ -186,8 +186,10 @@ jobs:
             echo '```'
           } > notes.md
 
-      # Idempotent (matches fermix-meetbot): creates the release or updates it,
-      # so a hand-created release or a re-run does not fail the job.
+      # Creates the release or updates it (matches fermix-meetbot), so a
+      # hand-created release does not fail the job. Updating replaces assets of
+      # the same name, and a rebuilt binary does not hash the same: never re-run
+      # this for a tag fermix already pins. Cut a new version instead.
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:

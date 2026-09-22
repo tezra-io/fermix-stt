@@ -9,11 +9,28 @@ The wire `protocol_version` is versioned separately from this crate; see
 
 ## [Unreleased]
 
-### 0.1.0
+## [0.1.1] - 2026-09-22
+
+Implements `protocol_version` 1, unchanged. The recognizer is the one 0.1.0
+shipped; this release is about which binaries get published.
+
+### Changed
+
+- Releases publish the two Linux binaries, linux-x86_64 and linux-aarch64,
+  beside macos-aarch64, all three built by `release.yml`. The v0.1.0 run built
+  both Linux binaries and published none of its builds: its Intel Mac job never
+  started, and the publish step waits for every build. The macos-aarch64 binary
+  on the v0.1.0 release was uploaded by hand before that run started. It is
+  ad-hoc signed, never went through the workflow's sign and notarize step, and
+  is not byte-identical to the one the run built.
+- No macos-x86_64 binary. GitHub retired its Intel macOS runners, so the release
+  no longer asks for one (the same choice fermix-meetbot made).
+
+## [0.1.0] - 2026-08-18
 
 First release. Implements `protocol_version` 1.
 
-#### Added
+### Added
 
 - NDJSON sidecar over stdin/stdout: `hello`, `result`, `stream_started`,
   `segment`, `stream_done`, `error` out; `transcribe`, `stream_start`, `audio`,
@@ -37,5 +54,6 @@ First release. Implements `protocol_version` 1.
 - `scripts/fetch-silero-vad.sh` — checksum-pinned fetch of the embedded VAD
   model for `--features sherpa` builds.
 - CI (fmt, clippy, test on macOS arm64 and Linux) and a tagged release workflow
-  producing `fermix-stt` binaries for macos-aarch64, macos-x86_64,
-  linux-x86_64 and linux-aarch64 with per-target checksums.
+  building `fermix-stt` for macos-aarch64, macos-x86_64, linux-x86_64 and
+  linux-aarch64 with per-target checksums. Only the macos-aarch64 binary was
+  published; see 0.1.1.
