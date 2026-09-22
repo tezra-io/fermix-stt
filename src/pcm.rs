@@ -15,10 +15,9 @@ pub fn from_le_bytes(bytes: &[u8]) -> Result<Vec<i16>, PcmError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(PcmError::OddLength(bytes.len()));
     }
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
-        .collect())
+    // The length is even, so `as_chunks` leaves no remainder to discard.
+    let (pairs, _remainder) = bytes.as_chunks::<2>();
+    Ok(pairs.iter().map(|pair| i16::from_le_bytes(*pair)).collect())
 }
 
 /// Normalize `i16` samples to `[-1.0, 1.0]`.
