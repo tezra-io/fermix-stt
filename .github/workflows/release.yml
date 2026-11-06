@@ -10,10 +10,12 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # ci.yml pins the same toolchain.
+  RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
   # Every released binary carries the real engine. This is also the first
@@ -38,20 +40,27 @@ jobs:
             runner: ubuntu-24.04-arm
             asset: linux-aarch64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install the toolchain
         run: |
-          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target ${{ matrix.target }}
+          rustup default "$RUST_TOOLCHAIN"
           rustc --version && cargo --version
 
       - name: Stage the embedded Silero VAD model
         run: scripts/fetch-silero-vad.sh
 
+      - name: Stage the pinned sherpa-onnx native library
+        run: scripts/fetch-sherpa-onnx.sh ${{ matrix.target }} "$RUNNER_TEMP/sherpa-onnx"
+
       - name: Build
+        env:
+          # sherpa-onnx-sys copies the archive staged above from this folder,
+          # and with it set never downloads one.
+          SHERPA_ONNX_ARCHIVE_DIR: ${{ runner.temp }}/sherpa-onnx
         run: cargo build --release --locked --features sherpa --target ${{ matrix.target }}
 
       - name: Verify the binary answers
@@ -90,6 +99,9 @@ jobs:
           codesign --force --timestamp --options runtime \
             --sign "$SIGNING_IDENTITY" "$BINARY"
           codesign --verify --strict --verbose=2 "$BINARY"
+          # Nothing after this signs (notarization uses the API key), so the
+          # identity leaves the runner before the steps that follow run.
+          security delete-keychain "$keychain"
 
           if [ -z "${NOTARY_KEY}" ] || [ -z "${NOTARY_KEY_ID}" ] || [ -z "${NOTARY_ISSUER_ID}" ]; then
             echo "::warning title=Not notarized::The binary is signed but MACOS_NOTARY_API_* are not set, so it was not notarized. Gatekeeper will still warn on first launch."
@@ -135,7 +147,7 @@ jobs:
           cat "dist/${bare}.sha256"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.package.outputs.name }}
           path: |
@@ -149,10 +161,12 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -191,7 +205,7 @@ jobs:
       # the same name, and a rebuilt binary does not hash the same: never re-run
       # this for a tag fermix already pins. Cut a new version instead.
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           body_path: notes.md

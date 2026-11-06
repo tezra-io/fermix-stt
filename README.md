@@ -57,7 +57,9 @@ cargo build --release --features sherpa
 native library (its build script downloads a prebuilt static archive) and embeds
 `assets/silero_vad.onnx` via `build.rs`, which fails loudly if the asset is
 absent. Released binaries are always built with this feature; that is what
-`release.yml` does.
+`release.yml` does, linking the archive `scripts/fetch-sherpa-onnx.sh` fetched
+and checked against its pinned sha256 (handed over by `SHERPA_ONNX_ARCHIVE_DIR`),
+never one the build script downloads.
 
 At runtime the engine expects `model_dir` to contain a Parakeet TDT export,
 by exact filename — a missing file is a loud `model_load_failed`, never a
@@ -76,7 +78,8 @@ Two things cannot be proven by this repo's hermetic suite, and both are on the
 owner before a release ships:
 
 1. **A `--features sherpa` build on each release target.** The native library is
-   downloaded and linked by the sherpa-onnx build script; CI runs default
+   the sha256-pinned archive `scripts/fetch-sherpa-onnx.sh` stages, linked by the
+   sherpa-onnx build script; CI runs default
    features only, so the first real compile of the engine happens in
    `release.yml`.
 2. **The RTF spike.** Run a real Parakeet model over a known clip on the target
